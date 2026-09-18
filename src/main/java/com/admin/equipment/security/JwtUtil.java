@@ -27,23 +27,28 @@ public class JwtUtil {
         this.key = Keys.hmacShaKeyFor(bytes);
     }
 
-    public String createToken(Long userId, String username) {
+    /** 令牌携带角色/班组/区域/权限版本快照；服务端仍以数据库为准并核对权限版本。 */
+    public String createToken(Long userId, String username, Role role, String teamName,
+                               String managedAreas, long permissionVersion) {
         Date now = new Date();
         return Jwts.builder()
                 .subject(String.valueOf(userId))
                 .claim("usr", username)
+                .claim("role", role == null ? null : role.name())
+                .claim("team", teamName)
+                .claim("areas", managedAreas)
+                .claim("pv", permissionVersion)
                 .issuedAt(now)
                 .expiration(new Date(now.getTime() + EXPIRE_MILLIS))
                 .signWith(key)
                 .compact();
     }
 
-    /** 校验并返回 userId，失败返回 null。 */
-    public Long parseUserId(String token) {
+    /** 校验签名/有效期并返回全部 Claims，失败返回 null。 */
+    public Claims parse(String token) {
         try {
-            Claims claims = Jwts.parser().verifyWith(key).build()
+            return Jwts.parser().verifyWith(key).build()
                     .parseSignedClaims(token).getPayload();
-            return Long.valueOf(claims.getSubject());
         } catch (Exception e) {
             return null;
         }

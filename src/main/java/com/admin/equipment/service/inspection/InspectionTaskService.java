@@ -78,6 +78,16 @@ public class InspectionTaskService {
         return taskRepo.findById(id);
     }
 
+    public InspectionPlan getPlanOrThrow(Long planId) {
+        return planRepo.findById(planId)
+                .orElseThrow(() -> new IllegalArgumentException("巡检计划不存在"));
+    }
+
+    public InspectionAbnormality getAbnormalityOrThrow(Long abnormalityId) {
+        return abnormalityRepo.findById(abnormalityId)
+                .orElseThrow(() -> new IllegalArgumentException("异常不存在"));
+    }
+
     public List<InspectionTaskPoint> getTaskPoints(Long taskId) {
         return taskPointRepo.findByTaskIdOrderByPlannedSequenceAsc(taskId);
     }

@@ -48,8 +48,15 @@ public class InspectionStatsService {
                                 double completionRate, double abnormalRate, double woConversionRate) {}
 
     public OverallStats getOverallStats() {
-        long totalPlans = planRepo.count();
-        List<InspectionTask> allTasks = taskRepo.findAll();
+        return getOverallStats(taskRepo.findAll(), abnormalityRepo.findAll(), planRepo.count());
+    }
+
+    /** 按已授权的任务/异常/计划集合计算总览，保证统计口径与列表数据范围一致。 */
+    public OverallStats getOverallStats(List<InspectionTask> scopedTasks,
+                                         List<InspectionAbnormality> scopedAbnormalities,
+                                         long scopedPlanCount) {
+        long totalPlans = scopedPlanCount;
+        List<InspectionTask> allTasks = scopedTasks;
         long totalTasks = allTasks.size();
         long completedTasks = 0, inProgressTasks = 0, pendingTasks = 0, cancelledTasks = 0;
         long totalPoints = 0, completedPoints = 0, missedPoints = 0;
@@ -64,7 +71,7 @@ public class InspectionStatsService {
             completedPoints += t.getCompletedPoints() == null ? 0 : t.getCompletedPoints();
             missedPoints += t.getMissedPoints() == null ? 0 : t.getMissedPoints();
         }
-        List<InspectionAbnormality> allAb = abnormalityRepo.findAll();
+        List<InspectionAbnormality> allAb = scopedAbnormalities;
         long totalAb = allAb.size();
         long woCreated = 0, closedLoop = 0;
         for (InspectionAbnormality ab : allAb) {
@@ -83,11 +90,18 @@ public class InspectionStatsService {
                              double completionRate, double abnormalRate) {}
 
     public List<DateStats> getDateRangeStats(LocalDate startDate, LocalDate endDate) {
+        return getDateRangeStats(startDate, endDate, null);
+    }
+
+    /** 允许的任务 ID 白名单；为 null 表示不限制（管理员/审计）。 */
+    public List<DateStats> getDateRangeStats(LocalDate startDate, LocalDate endDate,
+                                              java.util.Set<Long> allowedTaskIds) {
         LocalDateTime start = startDate.atStartOfDay();
         LocalDateTime end = endDate.atTime(23, 59, 59);
         List<InspectionTask> tasks = taskRepo.findByScheduledStartBetweenOrderByCreatedAtDesc(start, end);
         Map<LocalDate, List<InspectionTask>> byDate = new TreeMap<>();
         for (InspectionTask t : tasks) {
+            if (allowedTaskIds != null && !allowedTaskIds.contains(t.getId())) continue;
             LocalDate d = t.getScheduledStart() != null ? t.getScheduledStart().toLocalDate()
                     : (t.getCreatedAt() != null ? t.getCreatedAt().toLocalDate() : LocalDate.now());
             if (!d.isBefore(startDate) && !d.isAfter(endDate)) {
@@ -168,7 +182,29 @@ public class InspectionStatsService {
         } else {
             abs = abnormalityRepo.findByStatusOrderByReportedAtDesc(statusFilter);
         }
-        List<ClosedLoopTrace> result = new ArrayList<>();
+        return buildClosedLoopTraces(abs);
+    }
+
+    /** 在已授权异常集合内构建闭环追溯。 */
+    public List<ClosedLoopTrace> getClosedLoopTraces(String statusFilter,
+                                                      Collection<InspectionAbnormality> scopedAbs) {
+        List<InspectionAbnormality> abs = new ArrayList<>();
+        for (InspectionAbnormality ab : scopedAbs) {
+            if (statusFilter == null || statusFilter.isBlank() || "all".equals(statusFilter)
+                    || statusFilter.equals(ab.getStatus())) {
+                abs.add(ab);
+            }
+        }
+        abs.sort((a, b) -> {
+            if (a.getReportedAt() == null && b.getReportedAt() == null) return 0;
+            if (a.getReportedAt() == null) return 1;
+            if (b.getReportedAt() == null) return -1;
+            return b.getReportedAt().compareTo(a.getReportedAt());
+        });
+        return buildClosedLoopTraces(abs);
+    }
+
+    private List<ClosedLoopTrace> buildClosedLoopTraces(List<InspectionAbnormality> abs) {
         Map<Long, String> taskCodeMap = new HashMap<>();
         Map<Long, String> pointNameMap = new HashMap<>();
         for (InspectionTask t : taskRepo.findAll()) {
@@ -177,6 +213,7 @@ public class InspectionStatsService {
         for (InspectionPoint p : pointRepo.findAll()) {
             pointNameMap.put(p.getId(), p.getName());
         }
+        List<ClosedLoopTrace> result = new ArrayList<>();
         for (InspectionAbnormality ab : abs) {
             WorkOrder wo = ab.getWorkOrderId() != null ? workOrderRepo.findById(ab.getWorkOrderId()).orElse(null) : null;
             result.add(new ClosedLoopTrace(
@@ -209,11 +246,17 @@ public class InspectionStatsService {
                                        Long durationSeconds, boolean timeout) {}
 
     public List<TaskCompletionStats> getTaskCompletionStats(LocalDate startDate, LocalDate endDate) {
+        return getTaskCompletionStats(startDate, endDate, null);
+    }
+
+    public List<TaskCompletionStats> getTaskCompletionStats(LocalDate startDate, LocalDate endDate,
+                                                             java.util.Set<Long> allowedTaskIds) {
         LocalDateTime start = startDate.atStartOfDay();
         LocalDateTime end = endDate.atTime(23, 59, 59);
         List<InspectionTask> tasks = taskRepo.findByScheduledStartBetweenOrderByCreatedAtDesc(start, end);
         List<TaskCompletionStats> result = new ArrayList<>();
         for (InspectionTask t : tasks) {
+            if (allowedTaskIds != null && !allowedTaskIds.contains(t.getId())) continue;
             int total = t.getTotalPoints() == null ? 0 : t.getTotalPoints();
             int comp = t.getCompletedPoints() == null ? 0 : t.getCompletedPoints();
             int missed = t.getMissedPoints() == null ? 0 : t.getMissedPoints();
@@ -248,6 +291,10 @@ public class InspectionStatsService {
                               LocalDateTime arrivedAt, LocalDateTime leftAt, Long durationSeconds,
                               String status, boolean missed, int itemCount,
                               int qualifiedCount, int abnormalCount, String remark) {}
+
+    public boolean taskExists(Long taskId) {
+        return taskId != null && taskRepo.existsById(taskId);
+    }
 
     public ExecutionTrace getExecutionTrace(Long taskId) {
         InspectionTask task = taskRepo.findById(taskId).orElse(null);
