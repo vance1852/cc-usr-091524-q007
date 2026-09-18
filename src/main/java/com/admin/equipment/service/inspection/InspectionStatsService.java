@@ -1,16 +1,24 @@
 package com.admin.equipment.service.inspection;
 
+import com.admin.equipment.model.AppUser;
 import com.admin.equipment.model.Equipment;
 import com.admin.equipment.model.WorkOrder;
 import com.admin.equipment.model.inspection.*;
 import com.admin.equipment.repo.EquipmentRepository;
 import com.admin.equipment.repo.WorkOrderRepository;
 import com.admin.equipment.repo.inspection.*;
+import com.admin.equipment.security.AuthorizationService;
+import com.admin.equipment.security.ScopeService;
 import org.springframework.stereotype.Service;
 
 import java.time.*;
 import java.util.*;
 
+/**
+ * 巡检统计：所有指标都在“当前用户可见范围”内计算，可见性判定与列表/对象接口同源
+ * （{@link ScopeService} / {@link AuthorizationService}），
+ * 保证不同角色看到的设备、工单、任务、统计口径一致。
+ */
 @Service
 public class InspectionStatsService {
 
@@ -22,6 +30,8 @@ public class InspectionStatsService {
     private final InspectionPointRepository pointRepo;
     private final EquipmentRepository equipmentRepo;
     private final WorkOrderRepository workOrderRepo;
+    private final ScopeService scope;
+    private final AuthorizationService authz;
 
     public InspectionStatsService(InspectionTaskRepository taskRepo,
                                   InspectionTaskPointRepository taskPointRepo,
@@ -30,7 +40,9 @@ public class InspectionStatsService {
                                   InspectionPlanRepository planRepo,
                                   InspectionPointRepository pointRepo,
                                   EquipmentRepository equipmentRepo,
-                                  WorkOrderRepository workOrderRepo) {
+                                  WorkOrderRepository workOrderRepo,
+                                  ScopeService scope,
+                                  AuthorizationService authz) {
         this.taskRepo = taskRepo;
         this.taskPointRepo = taskPointRepo;
         this.recordRepo = recordRepo;
@@ -39,6 +51,8 @@ public class InspectionStatsService {
         this.pointRepo = pointRepo;
         this.equipmentRepo = equipmentRepo;
         this.workOrderRepo = workOrderRepo;
+        this.scope = scope;
+        this.authz = authz;
     }
 
     public record OverallStats(long totalPlans, long totalTasks, long completedTasks, long inProgressTasks,
@@ -47,9 +61,9 @@ public class InspectionStatsService {
                                 long woCreatedAbnormalities, long closedLoopAbnormalities,
                                 double completionRate, double abnormalRate, double woConversionRate) {}
 
-    public OverallStats getOverallStats() {
-        long totalPlans = planRepo.count();
-        List<InspectionTask> allTasks = taskRepo.findAll();
+    public OverallStats getOverallStats(AppUser user) {
+        long totalPlans = scope.visiblePlans(user, false).size();
+        List<InspectionTask> allTasks = scope.visibleTasks(user);
         long totalTasks = allTasks.size();
         long completedTasks = 0, inProgressTasks = 0, pendingTasks = 0, cancelledTasks = 0;
         long totalPoints = 0, completedPoints = 0, missedPoints = 0;
@@ -64,7 +78,7 @@ public class InspectionStatsService {
             completedPoints += t.getCompletedPoints() == null ? 0 : t.getCompletedPoints();
             missedPoints += t.getMissedPoints() == null ? 0 : t.getMissedPoints();
         }
-        List<InspectionAbnormality> allAb = abnormalityRepo.findAll();
+        List<InspectionAbnormality> allAb = scope.visibleAbnormalities(user);
         long totalAb = allAb.size();
         long woCreated = 0, closedLoop = 0;
         for (InspectionAbnormality ab : allAb) {
@@ -82,13 +96,12 @@ public class InspectionStatsService {
     public record DateStats(LocalDate date, long taskCount, long completedCount, long abnormalCount,
                              double completionRate, double abnormalRate) {}
 
-    public List<DateStats> getDateRangeStats(LocalDate startDate, LocalDate endDate) {
-        LocalDateTime start = startDate.atStartOfDay();
-        LocalDateTime end = endDate.atTime(23, 59, 59);
-        List<InspectionTask> tasks = taskRepo.findByScheduledStartBetweenOrderByCreatedAtDesc(start, end);
+    public List<DateStats> getDateRangeStats(AppUser user, LocalDate startDate, LocalDate endDate) {
+        List<InspectionTask> visible = scope.visibleTasks(user);
         Map<LocalDate, List<InspectionTask>> byDate = new TreeMap<>();
-        for (InspectionTask t : tasks) {
-            LocalDate d = t.getScheduledStart() != null ? t.getScheduledStart().toLocalDate()
+        for (InspectionTask t : visible) {
+            LocalDateTime sched = t.getScheduledStart();
+            LocalDate d = sched != null ? sched.toLocalDate()
                     : (t.getCreatedAt() != null ? t.getCreatedAt().toLocalDate() : LocalDate.now());
             if (!d.isBefore(startDate) && !d.isAfter(endDate)) {
                 byDate.computeIfAbsent(d, k -> new ArrayList<>()).add(t);
@@ -122,16 +135,18 @@ public class InspectionStatsService {
                                       String severity, String status, LocalDateTime reportedAt,
                                       String recheckResult, LocalDateTime recheckAt) {}
 
-    public EquipmentInspectionHistory getEquipmentHistory(Long equipmentId) {
+    public EquipmentInspectionHistory getEquipmentHistory(AppUser user, Long equipmentId) {
         Equipment eq = equipmentRepo.findById(equipmentId).orElse(null);
-        List<InspectionAbnormality> abs = abnormalityRepo.findByEquipmentIdOrderByReportedAtDesc(equipmentId);
-        Set<Long> taskIds = new HashSet<>();
-        for (InspectionAbnormality ab : abs) {
-            if (ab.getTaskId() != null) taskIds.add(ab.getTaskId());
-        }
-        List<InspectionRecord> records = recordRepo.findByPointIdOrderByRecordedAtDesc(0L);
+        Set<Long> visibleTaskIds = visibleTaskIdSet(user);
+        // 仅统计该设备上、且在当前用户可见任务范围内的异常
+        List<InspectionAbnormality> abs = abnormalityRepo.findByEquipmentIdOrderByReportedAtDesc(equipmentId)
+                .stream()
+                .filter(ab -> ab.getTaskId() == null || visibleTaskIds.contains(ab.getTaskId()))
+                .filter(ab -> authz.seesAllAreas(user) || areaOfEquipmentInScope(user, equipmentId, ab))
+                .toList();
         long inspCount = 0;
         for (InspectionTask t : taskRepo.findAll()) {
+            if (!visibleTaskIds.contains(t.getId())) continue;
             for (InspectionTaskPoint tp : taskPointRepo.findByTaskIdOrderByPlannedSequenceAsc(t.getId())) {
                 if (tp.getEquipmentIds() != null && tp.getEquipmentIds().contains(String.valueOf(equipmentId))) {
                     if ("completed".equals(tp.getStatus())) inspCount++;
@@ -151,6 +166,23 @@ public class InspectionStatsService {
                 inspCount, abs.size(), ar, summaries);
     }
 
+    /** 设备级异常的区域兜底判定：设备在范围内，或关联工单在范围内。 */
+    private boolean areaOfEquipmentInScope(AppUser user, Long equipmentId, InspectionAbnormality ab) {
+        Equipment eq = equipmentRepo.findById(equipmentId).orElse(null);
+        if (eq != null && authz.areaInScope(user, eq.getArea())) return true;
+        if (ab.getWorkOrderId() != null) {
+            WorkOrder wo = workOrderRepo.findById(ab.getWorkOrderId()).orElse(null);
+            if (wo != null && authz.areaInScope(user, wo.getArea())) return true;
+        }
+        return false;
+    }
+
+    private Set<Long> visibleTaskIdSet(AppUser user) {
+        Set<Long> ids = new HashSet<>();
+        for (InspectionTask t : scope.visibleTasks(user)) ids.add(t.getId());
+        return ids;
+    }
+
     public record ClosedLoopTrace(Long abnormalityId, Long taskId, String taskCode, Long pointId, String pointName,
                                    Long equipmentId, String equipmentCode, String equipmentName,
                                    String title, String description, String severity,
@@ -161,14 +193,15 @@ public class InspectionStatsService {
                                    String recheckResult, LocalDateTime recheckAt, String recheckBy,
                                    boolean closedLoop, LocalDateTime resolvedAt) {}
 
-    public List<ClosedLoopTrace> getClosedLoopTraces(String statusFilter) {
-        List<InspectionAbnormality> abs;
-        if (statusFilter == null || statusFilter.isBlank() || "all".equals(statusFilter)) {
-            abs = abnormalityRepo.findAllByOrderByReportedAtDesc();
-        } else {
-            abs = abnormalityRepo.findByStatusOrderByReportedAtDesc(statusFilter);
+    public List<ClosedLoopTrace> getClosedLoopTraces(AppUser user, String statusFilter) {
+        List<InspectionAbnormality> scoped = scope.visibleAbnormalities(user);
+        List<InspectionAbnormality> abs = new ArrayList<>();
+        for (InspectionAbnormality ab : scoped) {
+            if (statusFilter == null || statusFilter.isBlank() || "all".equals(statusFilter)
+                    || statusFilter.equals(ab.getStatus())) {
+                abs.add(ab);
+            }
         }
-        List<ClosedLoopTrace> result = new ArrayList<>();
         Map<Long, String> taskCodeMap = new HashMap<>();
         Map<Long, String> pointNameMap = new HashMap<>();
         for (InspectionTask t : taskRepo.findAll()) {
@@ -177,6 +210,7 @@ public class InspectionStatsService {
         for (InspectionPoint p : pointRepo.findAll()) {
             pointNameMap.put(p.getId(), p.getName());
         }
+        List<ClosedLoopTrace> result = new ArrayList<>();
         for (InspectionAbnormality ab : abs) {
             WorkOrder wo = ab.getWorkOrderId() != null ? workOrderRepo.findById(ab.getWorkOrderId()).orElse(null) : null;
             result.add(new ClosedLoopTrace(
@@ -208,12 +242,14 @@ public class InspectionStatsService {
                                        LocalDateTime scheduledEnd, LocalDateTime actualEnd,
                                        Long durationSeconds, boolean timeout) {}
 
-    public List<TaskCompletionStats> getTaskCompletionStats(LocalDate startDate, LocalDate endDate) {
-        LocalDateTime start = startDate.atStartOfDay();
-        LocalDateTime end = endDate.atTime(23, 59, 59);
-        List<InspectionTask> tasks = taskRepo.findByScheduledStartBetweenOrderByCreatedAtDesc(start, end);
+    public List<TaskCompletionStats> getTaskCompletionStats(AppUser user, LocalDate startDate, LocalDate endDate) {
+        List<InspectionTask> visible = scope.visibleTasks(user);
         List<TaskCompletionStats> result = new ArrayList<>();
-        for (InspectionTask t : tasks) {
+        for (InspectionTask t : visible) {
+            LocalDateTime sched = t.getScheduledStart();
+            LocalDate d = sched != null ? sched.toLocalDate()
+                    : (t.getCreatedAt() != null ? t.getCreatedAt().toLocalDate() : null);
+            if (d == null || d.isBefore(startDate) || d.isAfter(endDate)) continue;
             int total = t.getTotalPoints() == null ? 0 : t.getTotalPoints();
             int comp = t.getCompletedPoints() == null ? 0 : t.getCompletedPoints();
             int missed = t.getMissedPoints() == null ? 0 : t.getMissedPoints();
@@ -249,6 +285,10 @@ public class InspectionStatsService {
                               String status, boolean missed, int itemCount,
                               int qualifiedCount, int abnormalCount, String remark) {}
 
+    public InspectionTask findTaskRaw(Long taskId) {
+        return taskRepo.findById(taskId).orElse(null);
+    }
+
     public ExecutionTrace getExecutionTrace(Long taskId) {
         InspectionTask task = taskRepo.findById(taskId).orElse(null);
         if (task == null) return new ExecutionTrace(taskId, "", new ArrayList<>(), 0L);
@@ -266,7 +306,7 @@ public class InspectionStatsService {
         }
         long totalDur = 0;
         for (TracePoint tp : result) {
-            if (tp.durationSeconds != null) totalDur += tp.durationSeconds;
+            if (tp.durationSeconds != null) totalDur += tp.durationSeconds();
         }
         return new ExecutionTrace(taskId, task.getCode(), result, totalDur);
     }

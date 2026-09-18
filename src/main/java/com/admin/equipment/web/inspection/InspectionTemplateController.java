@@ -2,6 +2,8 @@ package com.admin.equipment.web.inspection;
 
 import com.admin.equipment.model.inspection.InspectionTemplate;
 import com.admin.equipment.model.inspection.InspectionTemplateItem;
+import com.admin.equipment.security.RequireRole;
+import com.admin.equipment.security.Role;
 import com.admin.equipment.service.inspection.InspectionTemplateService;
 import com.admin.equipment.service.inspection.InspectionTemplateService.ItemSpec;
 import org.springframework.http.HttpStatus;
@@ -24,6 +26,7 @@ public class InspectionTemplateController {
     public record TemplateRequest(String code, String name, String equipmentType,
                                    String description, List<ItemSpec> items) {}
 
+    /** 模板为跨区域复用的标准定义：所有登录角色可读，写操作限管理员/计划员。 */
     @GetMapping
     public List<InspectionTemplate> list(@RequestParam(required = false) String equipmentType) {
         if (equipmentType != null && !equipmentType.isBlank()) {
@@ -42,14 +45,14 @@ public class InspectionTemplateController {
 
     @GetMapping("/{id}/items")
     public ResponseEntity<?> listItems(@PathVariable Long id) {
-        if (!service.getById(id).isPresent()) {
+        if (service.getById(id).isEmpty()) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "模板不存在"));
         }
-        List<InspectionTemplateItem> items = service.getItems(id);
-        return ResponseEntity.ok(items);
+        return ResponseEntity.ok(service.getItems(id));
     }
 
     @PostMapping
+    @RequireRole({Role.ADMIN, Role.PLANNER})
     public ResponseEntity<?> create(@RequestBody TemplateRequest req) {
         try {
             InspectionTemplate t = service.create(req.code(), req.name(), req.equipmentType(),
@@ -61,6 +64,7 @@ public class InspectionTemplateController {
     }
 
     @PutMapping("/{id}")
+    @RequireRole({Role.ADMIN, Role.PLANNER})
     public ResponseEntity<?> update(@PathVariable Long id, @RequestBody TemplateRequest req) {
         try {
             InspectionTemplate t = service.update(id, req.name(), req.equipmentType(),
@@ -72,6 +76,7 @@ public class InspectionTemplateController {
     }
 
     @DeleteMapping("/{id}")
+    @RequireRole({Role.ADMIN, Role.PLANNER})
     public ResponseEntity<?> delete(@PathVariable Long id) {
         try {
             service.delete(id);

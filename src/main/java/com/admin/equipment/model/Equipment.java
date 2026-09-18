@@ -27,6 +27,10 @@ public class Equipment {
     @Column(length = 16)
     private String status = "normal";
 
+    // 所属区域（数据隔离边界），如 注塑车间A区 / 动力站 / 包装车间 / 电机房
+    @Column(length = 128)
+    private String area = "";
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -42,6 +46,8 @@ public class Equipment {
     public void setType(String type) { this.type = type; }
     public String getStatus() { return status; }
     public void setStatus(String status) { this.status = status; }
+    public String getArea() { return area; }
+    public void setArea(String area) { this.area = area == null ? "" : area; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

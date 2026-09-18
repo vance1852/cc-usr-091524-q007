@@ -65,7 +65,7 @@ public class InspectionPlanService {
 
     public record PlanSpec(String code, String name, Long templateId, String cycleType, Integer cycleValue,
                            String shiftType, String startTime, String endTime, Integer timeWindowMinutes,
-                           String teamName, String assigneeIds, String remark, List<Long> pointIds) {}
+                           String teamName, String area, String assigneeIds, String remark, List<Long> pointIds) {}
 
     @Transactional
     public InspectionPlan create(PlanSpec spec) {
@@ -87,6 +87,7 @@ public class InspectionPlanService {
         plan.setEndTime(spec.endTime() == null ? "18:00" : spec.endTime());
         plan.setTimeWindowMinutes(spec.timeWindowMinutes() == null ? 120 : spec.timeWindowMinutes());
         plan.setTeamName(spec.teamName() == null ? "" : spec.teamName());
+        plan.setArea(spec.area() == null ? "" : spec.area().trim());
         plan.setAssigneeIds(spec.assigneeIds() == null ? "" : spec.assigneeIds());
         plan.setRemark(spec.remark() == null ? "" : spec.remark());
         plan.setEnabled(true);
@@ -120,6 +121,7 @@ public class InspectionPlanService {
         if (spec.endTime() != null) plan.setEndTime(spec.endTime());
         if (spec.timeWindowMinutes() != null) plan.setTimeWindowMinutes(spec.timeWindowMinutes());
         if (spec.teamName() != null) plan.setTeamName(spec.teamName());
+        if (spec.area() != null) plan.setArea(spec.area().trim());
         if (spec.assigneeIds() != null) plan.setAssigneeIds(spec.assigneeIds());
         if (spec.remark() != null) plan.setRemark(spec.remark());
         if (spec.pointIds() != null && !spec.pointIds().isEmpty()) {

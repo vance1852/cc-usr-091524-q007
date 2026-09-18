@@ -1,8 +1,12 @@
 package com.admin.equipment.web.inspection;
 
+import com.admin.equipment.model.AppUser;
 import com.admin.equipment.model.inspection.InspectionPlan;
 import com.admin.equipment.model.inspection.InspectionPlanPoint;
 import com.admin.equipment.model.inspection.InspectionPoint;
+import com.admin.equipment.security.AuthorizationService;
+import com.admin.equipment.security.CurrentUser;
+import com.admin.equipment.security.ScopeService;
 import com.admin.equipment.service.inspection.InspectionPlanService;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.ResponseEntity;
@@ -16,44 +20,53 @@ import java.util.Map;
 public class InspectionPlanController {
 
     private final InspectionPlanService service;
+    private final ScopeService scope;
+    private final AuthorizationService authz;
 
-    public InspectionPlanController(InspectionPlanService service) {
+    public InspectionPlanController(InspectionPlanService service, ScopeService scope,
+                                     AuthorizationService authz) {
         this.service = service;
+        this.scope = scope;
+        this.authz = authz;
     }
 
     @GetMapping
-    public List<InspectionPlan> list(@RequestParam(required = false) Boolean enabled) {
-        if (Boolean.TRUE.equals(enabled)) {
-            return service.listEnabled();
-        }
-        return service.listAll();
+    public List<InspectionPlan> list(@CurrentUser AppUser user,
+                                      @RequestParam(required = false) Boolean enabled) {
+        return scope.visiblePlans(user, Boolean.TRUE.equals(enabled));
     }
 
     @GetMapping("/{id}")
-    public ResponseEntity<?> get(@PathVariable Long id) {
-        return service.getById(id)
-                .<ResponseEntity<?>>map(ResponseEntity::ok)
-                .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND)
-                        .body(Map.of("detail", "计划不存在")));
+    public ResponseEntity<?> get(@CurrentUser AppUser user, @PathVariable Long id) {
+        InspectionPlan plan = service.getById(id).orElse(null);
+        if (plan == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
+        }
+        authz.checkCanReadPlan(user, plan);
+        return ResponseEntity.ok(plan);
     }
 
     @GetMapping("/{id}/points")
-    public ResponseEntity<?> listPoints(@PathVariable Long id,
+    public ResponseEntity<?> listPoints(@CurrentUser AppUser user, @PathVariable Long id,
                                          @RequestParam(defaultValue = "false") boolean detail) {
-        if (!service.getById(id).isPresent()) {
+        InspectionPlan plan = service.getById(id).orElse(null);
+        if (plan == null) {
             return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
         }
+        authz.checkCanReadPlan(user, plan);
         if (detail) {
             List<InspectionPoint> pts = service.getPlanPointsDetail(id);
-            return ResponseEntity.ok(pts);
-        } else {
-            List<InspectionPlanPoint> pps = service.getPlanPoints(id);
-            return ResponseEntity.ok(pps);
+            return ResponseEntity.ok(authz.filterPoints(user, pts));
         }
+        List<InspectionPlanPoint> pps = service.getPlanPoints(id);
+        return ResponseEntity.ok(pps);
     }
 
     @PostMapping
-    public ResponseEntity<?> create(@RequestBody InspectionPlanService.PlanSpec req) {
+    public ResponseEntity<?> create(@CurrentUser AppUser user,
+                                     @RequestBody InspectionPlanService.PlanSpec req) {
+        String area = req.area() == null ? "" : req.area().trim();
+        authz.checkCanManagePlanArea(user, area);
         try {
             InspectionPlan p = service.create(req);
             return ResponseEntity.status(HttpStatus.CREATED).body(p);
@@ -63,7 +76,14 @@ public class InspectionPlanController {
     }
 
     @PutMapping("/{id}")
-    public ResponseEntity<?> update(@PathVariable Long id, @RequestBody InspectionPlanService.PlanSpec req) {
+    public ResponseEntity<?> update(@CurrentUser AppUser user, @PathVariable Long id,
+                                     @RequestBody InspectionPlanService.PlanSpec req) {
+        InspectionPlan existing = service.getById(id).orElse(null);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
+        }
+        authz.checkCanManagePlan(user, existing);
+        if (req.area() != null) authz.checkCanManagePlanArea(user, req.area().trim());
         try {
             InspectionPlan p = service.update(id, req);
             return ResponseEntity.ok(p);
@@ -73,59 +93,57 @@ public class InspectionPlanController {
     }
 
     @PatchMapping("/{id}/enabled")
-    public ResponseEntity<?> setEnabled(@PathVariable Long id, @RequestBody Map<String, Boolean> body) {
-        try {
-            boolean enabled = body.getOrDefault("enabled", true);
-            service.setEnabled(id, enabled);
-            return service.getById(id)
-                    .<ResponseEntity<?>>map(ResponseEntity::ok)
-                    .orElseGet(() -> ResponseEntity.status(HttpStatus.NOT_FOUND).build());
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.unprocessableEntity().body(Map.of("detail", e.getMessage()));
+    public ResponseEntity<?> setEnabled(@CurrentUser AppUser user, @PathVariable Long id,
+                                         @RequestBody Map<String, Boolean> body) {
+        InspectionPlan existing = service.getById(id).orElse(null);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
         }
+        authz.checkCanManagePlan(user, existing);
+        boolean enabled = body.getOrDefault("enabled", true);
+        service.setEnabled(id, enabled);
+        return ResponseEntity.ok(service.getById(id).orElseThrow());
     }
 
     @DeleteMapping("/{id}")
-    public ResponseEntity<?> delete(@PathVariable Long id) {
-        try {
-            service.delete(id);
-            return ResponseEntity.noContent().build();
-        } catch (IllegalArgumentException e) {
-            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", e.getMessage()));
+    public ResponseEntity<?> delete(@CurrentUser AppUser user, @PathVariable Long id) {
+        InspectionPlan existing = service.getById(id).orElse(null);
+        if (existing == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
         }
+        authz.checkCanManagePlan(user, existing);
+        service.delete(id);
+        return ResponseEntity.noContent().build();
     }
 
     @GetMapping("/{id}/route/compare")
-    public ResponseEntity<?> compareRoutes(@PathVariable Long id) {
-        try {
-            InspectionPlanService.RouteCompareResult r = service.compareRoutes(id);
-            return ResponseEntity.ok(Map.of(
-                    "sequential", r.sequential(),
-                    "optimized", r.optimized(),
-                    "distanceSaved", r.distanceSaved(),
-                    "savedPercent", r.savedPercent(),
-                    "savedPercentStr", String.format("%.2f%%", r.savedPercent())
-            ));
-        } catch (Exception e) {
-            return ResponseEntity.unprocessableEntity().body(Map.of("detail", e.getMessage()));
+    public ResponseEntity<?> compareRoutes(@CurrentUser AppUser user, @PathVariable Long id) {
+        InspectionPlan plan = service.getById(id).orElse(null);
+        if (plan == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
         }
+        authz.checkCanReadPlan(user, plan);
+        InspectionPlanService.RouteCompareResult r = service.compareRoutes(id);
+        return ResponseEntity.ok(Map.of(
+                "sequential", r.sequential(),
+                "optimized", r.optimized(),
+                "distanceSaved", r.distanceSaved(),
+                "savedPercent", r.savedPercent(),
+                "savedPercentStr", String.format("%.2f%%", r.savedPercent())
+        ));
     }
 
     @PostMapping("/{id}/route/plan")
-    public ResponseEntity<?> planRoute(@PathVariable Long id, @RequestBody Map<String, Object> body) {
-        try {
-            Object spObj = body.get("startPointId");
-            Long startPointId;
-            if (spObj instanceof Number) {
-                startPointId = ((Number) spObj).longValue();
-            } else {
-                startPointId = null;
-            }
-            boolean useOptimized = !"sequential".equals(body.get("routeType"));
-            var r = service.planRouteForExecution(id, startPointId, useOptimized);
-            return ResponseEntity.ok(r);
-        } catch (Exception e) {
-            return ResponseEntity.unprocessableEntity().body(Map.of("detail", e.getMessage()));
+    public ResponseEntity<?> planRoute(@CurrentUser AppUser user, @PathVariable Long id,
+                                        @RequestBody Map<String, Object> body) {
+        InspectionPlan plan = service.getById(id).orElse(null);
+        if (plan == null) {
+            return ResponseEntity.status(HttpStatus.NOT_FOUND).body(Map.of("detail", "计划不存在"));
         }
+        authz.checkCanReadPlan(user, plan);
+        Object spObj = body.get("startPointId");
+        Long startPointId = spObj instanceof Number ? ((Number) spObj).longValue() : null;
+        boolean useOptimized = !"sequential".equals(body.get("routeType"));
+        return ResponseEntity.ok(service.planRouteForExecution(id, startPointId, useOptimized));
     }
 }

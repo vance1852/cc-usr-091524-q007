@@ -78,6 +78,18 @@ public class InspectionTaskService {
         return taskRepo.findById(id);
     }
 
+    public Optional<InspectionPlan> getPlanById(Long planId) {
+        return planRepo.findById(planId);
+    }
+
+    public Optional<InspectionTaskPoint> getTaskPointById(Long id) {
+        return taskPointRepo.findById(id);
+    }
+
+    public Optional<InspectionAbnormality> getAbnormalityById(Long id) {
+        return abnormalityRepo.findById(id);
+    }
+
     public List<InspectionTaskPoint> getTaskPoints(Long taskId) {
         return taskPointRepo.findByTaskIdOrderByPlannedSequenceAsc(taskId);
     }
@@ -489,6 +501,7 @@ public class InspectionTaskService {
         if (abnormalityRepo.existsByWorkOrderId(ab.getId())) return null;
         WorkOrder wo = new WorkOrder();
         wo.setEquipmentId(ab.getEquipmentId());
+        wo.setArea(eq.getArea() == null ? "" : eq.getArea());
         String woType = ab.getWorkOrderType();
         if (woType == null) woType = "repair";
         wo.setType(woType);

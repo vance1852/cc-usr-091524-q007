@@ -41,6 +41,10 @@ public class InspectionPlan {
     @Column(name = "team_name", length = 64)
     private String teamName = "";
 
+    // 所属区域（计划员数据隔离边界）
+    @Column(length = 128)
+    private String area = "";
+
     @Column(name = "assignee_ids", length = 512)
     private String assigneeIds = "";
 
@@ -78,6 +82,8 @@ public class InspectionPlan {
     public void setTimeWindowMinutes(Integer timeWindowMinutes) { this.timeWindowMinutes = timeWindowMinutes; }
     public String getTeamName() { return teamName; }
     public void setTeamName(String teamName) { this.teamName = teamName; }
+    public String getArea() { return area; }
+    public void setArea(String area) { this.area = area == null ? "" : area; }
     public String getAssigneeIds() { return assigneeIds; }
     public void setAssigneeIds(String assigneeIds) { this.assigneeIds = assigneeIds; }
     public String getRemark() { return remark; }

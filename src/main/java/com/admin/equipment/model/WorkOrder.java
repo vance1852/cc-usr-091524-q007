@@ -13,6 +13,10 @@ public class WorkOrder {
     @Column(name = "equipment_id", nullable = false)
     private Long equipmentId;
 
+    // 工单区域快照：建单时取自设备，作为数据隔离与筛选依据
+    @Column(length = 128)
+    private String area = "";
+
     @Column(nullable = false, length = 128)
     private String title;
 
@@ -34,6 +38,10 @@ public class WorkOrder {
     @Column(name = "assignee", length = 64)
     private String assignee = "";
 
+    // 受派人用户ID（维修员按此判断“获派工单”），未派工时为空
+    @Column(name = "assignee_id")
+    private Long assigneeId;
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -44,6 +52,8 @@ public class WorkOrder {
     public void setId(Long id) { this.id = id; }
     public Long getEquipmentId() { return equipmentId; }
     public void setEquipmentId(Long equipmentId) { this.equipmentId = equipmentId; }
+    public String getArea() { return area; }
+    public void setArea(String area) { this.area = area == null ? "" : area; }
     public String getTitle() { return title; }
     public void setTitle(String title) { this.title = title; }
     public String getType() { return type; }
@@ -56,6 +66,8 @@ public class WorkOrder {
     public void setDescription(String description) { this.description = description; }
     public String getAssignee() { return assignee; }
     public void setAssignee(String assignee) { this.assignee = assignee; }
+    public Long getAssigneeId() { return assigneeId; }
+    public void setAssigneeId(Long assigneeId) { this.assigneeId = assigneeId; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
     public LocalDateTime getClosedAt() { return closedAt; }

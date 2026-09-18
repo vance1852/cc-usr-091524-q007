@@ -32,6 +32,10 @@ public class InspectionPoint {
     @Column(name = "equipment_type", length = 32)
     private String equipmentType = "";
 
+    // 所属区域（数据隔离边界）
+    @Column(length = 128)
+    private String area = "";
+
     @Column(name = "created_at")
     private LocalDateTime createdAt = LocalDateTime.now();
 
@@ -51,6 +55,8 @@ public class InspectionPoint {
     public void setEquipmentIds(String equipmentIds) { this.equipmentIds = equipmentIds; }
     public String getEquipmentType() { return equipmentType; }
     public void setEquipmentType(String equipmentType) { this.equipmentType = equipmentType; }
+    public String getArea() { return area; }
+    public void setArea(String area) { this.area = area == null ? "" : area; }
     public LocalDateTime getCreatedAt() { return createdAt; }
     public void setCreatedAt(LocalDateTime createdAt) { this.createdAt = createdAt; }
 }

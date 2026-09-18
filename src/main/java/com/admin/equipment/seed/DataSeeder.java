@@ -15,7 +15,9 @@ import org.springframework.boot.CommandLineRunner;
 import org.springframework.stereotype.Component;
 
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 
 @Component
 public class DataSeeder implements CommandLineRunner {
@@ -47,49 +49,102 @@ public class DataSeeder implements CommandLineRunner {
         this.pointRepo = pointRepo;
         this.templateRepo = templateRepo;
         this.itemRepo = itemRepo;
-        this.planRepo = planRepo;
         this.planPointRepo = planPointRepo;
+        this.planRepo = planRepo;
     }
 
     @Override
     public void run(String... args) {
-        seedUsers();
+        Map<String, AppUser> users = seedUsers();
         List<Equipment> equips = seedEquipments();
-        seedWorkOrders(equips);
+        seedWorkOrders(equips, users);
         List<InspectionPoint> points = seedInspectionPoints(equips);
         List<InspectionTemplate> templates = seedTemplates();
-        seedPlans(points, templates);
+        seedPlans(points, templates, users);
         System.out.println("种子数据初始化完成");
     }
 
-    private void seedUsers() {
-        if (!userRepo.existsByUsername(adminUsername)) {
-            AppUser admin = new AppUser();
-            admin.setUsername(adminUsername);
-            admin.setPasswordHash(PasswordUtil.hash(adminPassword));
-            admin.setDisplayName("平台管理员");
-            userRepo.save(admin);
-            System.out.println("已创建管理员账号");
+    /** 角色种子账号定义：五类角色 + 班组 + 可管理区域。 */
+    private record SeedAccount(String username, String displayName, String role,
+                                String team, String areas) {}
+
+    private static final List<SeedAccount> STAFF = List.of(
+            new SeedAccount("wangxj", "王巡检", "INSPECTOR", "甲班巡检组", "注塑车间A区"),
+            new SeedAccount("lixj", "李巡检", "INSPECTOR", "乙班动力组", "动力站"),
+            new SeedAccount("zhangwb", "张维保", "MAINTAINER", "维修一班", "动力站,包装车间"),
+            new SeedAccount("zhaogcs", "赵工程师", "PLANNER", "计划调度组",
+                    "注塑车间A区,动力站,包装车间,电机房,注塑车间B区"),
+            new SeedAccount("sunjh", "孙计划", "PLANNER", "计划调度组", "注塑车间A区,注塑车间B区"),
+            new SeedAccount("qiansj", "钱审计", "AUDITOR", "审计组", "")
+    );
+
+    private Map<String, AppUser> seedUsers() {
+        Map<String, AppUser> map = new HashMap<>();
+
+        // 现有管理员账号保持可用，并补齐 ADMIN 角色
+        AppUser admin = userRepo.findByUsername(adminUsername).orElseGet(() -> {
+            AppUser a = new AppUser();
+            a.setUsername(adminUsername);
+            a.setPasswordHash(PasswordUtil.hash(adminPassword));
+            a.setDisplayName("平台管理员");
+            return a;
+        });
+        admin.setRole("ADMIN");
+        admin.setEnabled(true);
+        if (admin.getPermissionVersion() == null) admin.setPermissionVersion(1);
+        if (admin.getManagedAreas() == null) admin.setManagedAreas("");
+        if (admin.getTeamName() == null) admin.setTeamName("");
+        map.put(adminUsername, userRepo.save(admin));
+        System.out.println("已确保管理员账号存在且具备 ADMIN 角色");
+
+        // 旧库遗留账号 -> 新角色/班组/区域映射（幂等回填）
+        Map<String, SeedAccount> legacy = new HashMap<>();
+        for (SeedAccount a : STAFF) legacy.put(a.username(), a);
+
+        for (SeedAccount acc : STAFF) {
+            AppUser u = userRepo.findByUsername(acc.username()).orElseGet(() -> {
+                AppUser n = new AppUser();
+                n.setUsername(acc.username());
+                n.setPasswordHash(PasswordUtil.hash("123456"));
+                return n;
+            });
+            u.setDisplayName(acc.displayName());
+            u.setRole(acc.role());
+            u.setTeamName(acc.team());
+            u.setManagedAreas(acc.areas());
+            u.setEnabled(true);
+            if (u.getPermissionVersion() == null) u.setPermissionVersion(1);
+            map.put(acc.username(), userRepo.save(u));
         }
-        if (userRepo.count() == 1) {
-            String[] names = {"王巡检", "李巡检", "张维保", "赵工程师"};
-            String[] usernames = {"wangxj", "lixj", "zhangwb", "zhaogcs"};
-            for (int i = 0; i < names.length; i++) {
-                if (!userRepo.existsByUsername(usernames[i])) {
-                    AppUser u = new AppUser();
-                    u.setUsername(usernames[i]);
-                    u.setPasswordHash(PasswordUtil.hash("123456"));
-                    u.setDisplayName(names[i]);
-                    userRepo.save(u);
-                }
-            }
-            System.out.println("已创建巡检/维保人员账号");
+
+        // 兜底：任何历史遗留、无角色的账号默认置为巡检员并启用，避免登录后无角色
+        for (AppUser u : userRepo.findAll()) {
+            boolean dirty = false;
+            if (u.getRole() == null || u.getRole().isBlank()) { u.setRole("INSPECTOR"); dirty = true; }
+            if (u.getEnabled() == null) { u.setEnabled(true); dirty = true; }
+            if (u.getPermissionVersion() == null) { u.setPermissionVersion(1); dirty = true; }
+            if (u.getTeamName() == null) { u.setTeamName(""); dirty = true; }
+            if (u.getManagedAreas() == null) { u.setManagedAreas(""); dirty = true; }
+            if (dirty) userRepo.save(u);
         }
+        System.out.println("已初始化五类角色账号（管理员/计划员/巡检员/维修员/审计员）");
+        return map;
     }
 
     private List<Equipment> seedEquipments() {
         if (equipmentRepo.count() > 0) {
-            return equipmentRepo.findAll();
+            // 旧库回填区域：以 location 作为区域
+            List<Equipment> all = equipmentRepo.findAll();
+            boolean dirty = false;
+            for (Equipment e : all) {
+                if ((e.getArea() == null || e.getArea().isBlank())
+                        && e.getLocation() != null && !e.getLocation().isBlank()) {
+                    e.setArea(e.getLocation());
+                    dirty = true;
+                }
+            }
+            if (dirty) equipmentRepo.saveAll(all);
+            return all;
         }
         Equipment e1 = newEquip("EQ-1001", "一号注塑机", "注塑车间A区", "robot", "normal");
         Equipment e2 = newEquip("EQ-1002", "二号空压机", "动力站", "pump", "warning");
@@ -104,22 +159,47 @@ public class DataSeeder implements CommandLineRunner {
         return list;
     }
 
-    private void seedWorkOrders(List<Equipment> equips) {
-        if (workOrderRepo.count() > 0) return;
-        workOrderRepo.saveAll(List.of(
-                newOrder(equips.get(1).getId(), "空压机压力异常巡检", "inspection", "high",
-                        "巡检发现排气压力波动，需排查", "王巡检", "open"),
-                newOrder(equips.get(2).getId(), "输送带断带抢修", "repair", "urgent",
-                        "包装线输送带断裂，停机抢修", "李工", "in_progress"),
-                newOrder(equips.get(3).getId(), "循环水泵季度保养", "maintenance", "medium",
-                        "按计划做季度保养换油", "张工", "open"),
-                newOrder(equips.get(0).getId(), "注塑机模具点检", "inspection", "low",
-                        "例行模具与液压点检", "赵工", "done")
-        ));
+    private void seedWorkOrders(List<Equipment> equips, Map<String, AppUser> users) {
+        Long maintainerId = users.get("zhangwb") != null ? users.get("zhangwb").getId() : null;
+        if (workOrderRepo.count() == 0) {
+            WorkOrder o1 = newOrder(equips.get(1).getId(), "空压机压力异常巡检", "inspection", "high",
+                    "巡检发现排气压力波动，需排查", "王巡检", "open", null);
+            WorkOrder o2 = newOrder(equips.get(2).getId(), "输送带断带抢修", "repair", "urgent",
+                    "包装线输送带断裂，停机抢修", "张维保", "in_progress", maintainerId);
+            WorkOrder o3 = newOrder(equips.get(3).getId(), "循环水泵季度保养", "maintenance", "medium",
+                    "按计划做季度保养换油", "张维保", "open", maintainerId);
+            WorkOrder o4 = newOrder(equips.get(0).getId(), "注塑机模具点检", "inspection", "low",
+                    "例行模具与液压点检", "赵工", "done", null);
+            for (WorkOrder o : List.of(o1, o2, o3, o4)) o.setArea(areaOf(equips, o.getEquipmentId()));
+            workOrderRepo.saveAll(List.of(o1, o2, o3, o4));
+            return;
+        }
+        // 旧库回填区域
+        List<WorkOrder> all = workOrderRepo.findAll();
+        boolean dirty = false;
+        for (WorkOrder o : all) {
+            if (o.getArea() == null || o.getArea().isBlank()) {
+                o.setArea(areaOf(equips, o.getEquipmentId()));
+                dirty = true;
+            }
+        }
+        if (dirty) workOrderRepo.saveAll(all);
     }
 
     private List<InspectionPoint> seedInspectionPoints(List<Equipment> equips) {
-        if (pointRepo.count() > 0) return pointRepo.findAllByOrderByCodeAsc();
+        if (pointRepo.count() > 0) {
+            List<InspectionPoint> all = pointRepo.findAllByOrderByCodeAsc();
+            boolean dirty = false;
+            for (InspectionPoint p : all) {
+                if ((p.getArea() == null || p.getArea().isBlank())
+                        && p.getLocation() != null && !p.getLocation().isBlank()) {
+                    p.setArea(areaFromLocation(p.getLocation()));
+                    dirty = true;
+                }
+            }
+            if (dirty) pointRepo.saveAll(all);
+            return all;
+        }
         List<InspectionPoint> list = new ArrayList<>();
         InspectionPoint p1 = newPoint("IP-001", "注塑车间A区巡检点", "注塑车间A区东北角",
                 10.0, 5.0, equips.get(0).getId().toString(), "robot");
@@ -137,6 +217,9 @@ public class DataSeeder implements CommandLineRunner {
                 60.0, 20.0, equips.get(7).getId().toString(), "motor");
         InspectionPoint p8 = newPoint("IP-008", "总控室仪表巡检点", "总控室二楼",
                 5.0, 20.0, "", "");
+        for (InspectionPoint p : List.of(p1, p2, p3, p4, p5, p6, p7, p8)) {
+            p.setArea(areaFromLocation(p.getLocation()));
+        }
         list.add(p1); list.add(p2); list.add(p3); list.add(p4);
         list.add(p5); list.add(p6); list.add(p7); list.add(p8);
         pointRepo.saveAll(list);
@@ -217,32 +300,51 @@ public class DataSeeder implements CommandLineRunner {
         return list;
     }
 
-    private void seedPlans(List<InspectionPoint> points, List<InspectionTemplate> templates) {
-        if (planRepo.count() > 0) return;
-        InspectionTemplate robotTpl = findTpl(templates, "TPL-ROBOT-01");
-        InspectionTemplate pumpTpl = findTpl(templates, "TPL-PUMP-01");
-        InspectionTemplate convTpl = findTpl(templates, "TPL-CONV-01");
-        InspectionTemplate motorTpl = findTpl(templates, "TPL-MOTOR-01");
-        InspectionTemplate genTpl = findTpl(templates, "TPL-GEN-01");
+    private void seedPlans(List<InspectionPoint> points, List<InspectionTemplate> templates,
+                            Map<String, AppUser> users) {
+        String wangxj = String.valueOf(users.get("wangxj").getId());
+        String lixj = String.valueOf(users.get("lixj").getId());
 
-        InspectionPlan plan1 = newPlan("PLAN-DAILY-A", "注塑车间日班巡检计划",
-                robotTpl != null ? robotTpl.getId() : templates.get(0).getId(),
-                "daily", 1, "day", "08:00", "10:00", 120,
-                "甲班巡检组", "2,3", "每日早班对注塑区及周边进行巡检");
-        InspectionPlan plan2 = newPlan("PLAN-SHIFT-B", "动力站轮换班巡检计划",
-                pumpTpl != null ? pumpTpl.getId() : templates.get(0).getId(),
-                "shift", 1, "night", "20:00", "22:00", 180,
-                "乙班动力组", "2,4", "夜班动力设备专项巡检");
-        InspectionPlan plan3 = newPlan("PLAN-WEEKLY-C", "包装与电机房周巡检计划",
-                convTpl != null ? convTpl.getId() : templates.get(0).getId(),
-                "weekly", 1, "day", "09:00", "12:00", 240,
-                "周巡检组", "2,3,4", "每周一上午执行包装车间和电机房巡检");
-        InspectionPlan plan4 = newPlan("PLAN-ALL-D", "全厂综合巡检计划",
-                genTpl != null ? genTpl.getId() : templates.get(templates.size() - 1).getId(),
-                "daily", 1, "day", "14:00", "17:00", 180,
-                "综合巡检组", "2,3,4,5", "每日下午全厂巡检，覆盖所有巡检点");
-        planRepo.saveAll(List.of(plan1, plan2, plan3, plan4));
+        if (planRepo.count() == 0) {
+            InspectionTemplate robotTpl = findTpl(templates, "TPL-ROBOT-01");
+            InspectionTemplate pumpTpl = findTpl(templates, "TPL-PUMP-01");
+            InspectionTemplate convTpl = findTpl(templates, "TPL-CONV-01");
+            InspectionTemplate motorTpl = findTpl(templates, "TPL-MOTOR-01");
+            InspectionTemplate genTpl = findTpl(templates, "TPL-GEN-01");
 
+            InspectionPlan plan1 = newPlan("PLAN-DAILY-A", "注塑车间日班巡检计划",
+                    robotTpl != null ? robotTpl.getId() : templates.get(0).getId(),
+                    "daily", 1, "day", "08:00", "10:00", 120,
+                    "甲班巡检组", "注塑车间A区", wangxj, "每日早班对注塑区及周边进行巡检");
+            InspectionPlan plan2 = newPlan("PLAN-SHIFT-B", "动力站轮换班巡检计划",
+                    pumpTpl != null ? pumpTpl.getId() : templates.get(0).getId(),
+                    "shift", 1, "night", "20:00", "22:00", 180,
+                    "乙班动力组", "动力站", lixj, "夜班动力设备专项巡检");
+            InspectionPlan plan3 = newPlan("PLAN-WEEKLY-C", "包装与电机房周巡检计划",
+                    convTpl != null ? convTpl.getId() : templates.get(0).getId(),
+                    "weekly", 1, "day", "09:00", "12:00", 240,
+                    "周巡检组", "包装车间", wangxj + "," + lixj, "每周一上午执行包装车间和电机房巡检");
+            InspectionPlan plan4 = newPlan("PLAN-ALL-D", "全厂综合巡检计划",
+                    genTpl != null ? genTpl.getId() : templates.get(templates.size() - 1).getId(),
+                    "daily", 1, "day", "14:00", "17:00", 180,
+                    "综合巡检组", "", wangxj + "," + lixj, "每日下午全厂巡检，覆盖所有巡检点");
+            planRepo.saveAll(List.of(plan1, plan2, plan3, plan4));
+            seedPlanPoints(plan1, plan2, plan3, plan4, points);
+            System.out.println("已初始化巡检计划种子数据 (4个计划)");
+            return;
+        }
+
+        // 旧库回填区域/指派人
+        Map<String, InspectionPlan> byCode = new HashMap<>();
+        for (InspectionPlan p : planRepo.findAll()) byCode.put(p.getCode(), p);
+        patchPlan(byCode.get("PLAN-DAILY-A"), "注塑车间A区", "甲班巡检组", wangxj);
+        patchPlan(byCode.get("PLAN-SHIFT-B"), "动力站", "乙班动力组", lixj);
+        patchPlan(byCode.get("PLAN-WEEKLY-C"), "包装车间", "周巡检组", wangxj + "," + lixj);
+        patchPlan(byCode.get("PLAN-ALL-D"), "", "综合巡检组", wangxj + "," + lixj);
+    }
+
+    private void seedPlanPoints(InspectionPlan plan1, InspectionPlan plan2, InspectionPlan plan3,
+                                 InspectionPlan plan4, List<InspectionPoint> points) {
         int seq = 1;
         for (InspectionPoint p : points) {
             if ("robot".equals(p.getEquipmentType()) || "IP-008".equals(p.getCode())) {
@@ -265,7 +367,39 @@ public class DataSeeder implements CommandLineRunner {
         for (InspectionPoint p : points) {
             planPointRepo.save(newPlanPoint(plan4.getId(), p.getId(), seq++));
         }
-        System.out.println("已初始化巡检计划种子数据 (4个计划)");
+    }
+
+    private void patchPlan(InspectionPlan p, String area, String team, String assigneeIds) {
+        if (p == null) return;
+        boolean dirty = false;
+        if (p.getArea() == null || (!p.getArea().isBlank() && !p.getArea().equals(area) && area != null)) {
+            // 仅在旧值为旧式占位（如 "2,3"）或空时覆盖；这里计划区域为新字段，空即回填
+        }
+        if (p.getArea() == null || p.getArea().isBlank()) { p.setArea(area == null ? "" : area); dirty = true; }
+        if (team != null && (p.getTeamName() == null || p.getTeamName().isBlank())) {
+            p.setTeamName(team); dirty = true;
+        }
+        // assignee_ids 旧种子是占位 ID（"2,3"），统一按用户名实际 ID 重写
+        p.setAssigneeIds(assigneeIds);
+        dirty = true;
+        if (dirty) planRepo.save(p);
+    }
+
+    private String areaOf(List<Equipment> equips, Long equipmentId) {
+        for (Equipment e : equips) {
+            if (e.getId().equals(equipmentId)) return e.getArea() == null ? "" : e.getArea();
+        }
+        return "";
+    }
+
+    /** 巡检点位置 -> 区域：取位置中已知区域关键字。 */
+    private String areaFromLocation(String location) {
+        if (location == null) return "";
+        String[] areas = {"注塑车间A区", "注塑车间B区", "动力站", "包装车间", "电机房", "总控室"};
+        for (String a : areas) {
+            if (location.contains(a)) return a;
+        }
+        return location;
     }
 
     private Equipment newEquip(String code, String name, String location, String type, String status) {
@@ -273,13 +407,14 @@ public class DataSeeder implements CommandLineRunner {
         e.setCode(code);
         e.setName(name);
         e.setLocation(location);
+        e.setArea(location);
         e.setType(type);
         e.setStatus(status);
         return e;
     }
 
     private WorkOrder newOrder(Long equipmentId, String title, String type, String priority,
-                               String description, String assignee, String status) {
+                               String description, String assignee, String status, Long assigneeId) {
         WorkOrder w = new WorkOrder();
         w.setEquipmentId(equipmentId);
         w.setTitle(title);
@@ -287,6 +422,7 @@ public class DataSeeder implements CommandLineRunner {
         w.setPriority(priority);
         w.setDescription(description);
         w.setAssignee(assignee);
+        w.setAssigneeId(assigneeId);
         w.setStatus(status);
         return w;
     }
@@ -329,7 +465,7 @@ public class DataSeeder implements CommandLineRunner {
 
     private InspectionPlan newPlan(String code, String name, Long tplId, String cycle, int cycleVal,
                                     String shift, String start, String end, int winMin,
-                                    String team, String asg, String remark) {
+                                    String team, String area, String asg, String remark) {
         InspectionPlan p = new InspectionPlan();
         p.setCode(code);
         p.setName(name);
@@ -341,6 +477,7 @@ public class DataSeeder implements CommandLineRunner {
         p.setEndTime(end);
         p.setTimeWindowMinutes(winMin);
         p.setTeamName(team);
+        p.setArea(area);
         p.setAssigneeIds(asg);
         p.setRemark(remark);
         p.setEnabled(true);

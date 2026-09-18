@@ -34,7 +34,7 @@ public class InspectionPointService {
 
     @Transactional
     public InspectionPoint create(String code, String name, String location, Double coordX,
-                                   Double coordY, String equipmentIds, String equipmentType) {
+                                   Double coordY, String equipmentIds, String equipmentType, String area) {
         if (code == null || code.isBlank()) throw new IllegalArgumentException("编号必填");
         if (name == null || name.isBlank()) throw new IllegalArgumentException("名称必填");
         if (repo.existsByCode(code)) throw new IllegalArgumentException("编号已存在");
@@ -46,12 +46,13 @@ public class InspectionPointService {
         p.setCoordY(coordY);
         p.setEquipmentIds(equipmentIds == null ? "" : equipmentIds);
         p.setEquipmentType(equipmentType == null ? "" : equipmentType);
+        p.setArea(area);
         return repo.save(p);
     }
 
     @Transactional
     public InspectionPoint update(Long id, String name, String location, Double coordX,
-                                   Double coordY, String equipmentIds, String equipmentType) {
+                                   Double coordY, String equipmentIds, String equipmentType, String area) {
         InspectionPoint p = repo.findById(id).orElseThrow(() -> new IllegalArgumentException("巡检点不存在"));
         if (name != null && !name.isBlank()) p.setName(name);
         if (location != null) p.setLocation(location);
@@ -59,6 +60,7 @@ public class InspectionPointService {
         if (coordY != null) p.setCoordY(coordY);
         if (equipmentIds != null) p.setEquipmentIds(equipmentIds);
         if (equipmentType != null) p.setEquipmentType(equipmentType);
+        if (area != null) p.setArea(area);
         return repo.save(p);
     }
 
